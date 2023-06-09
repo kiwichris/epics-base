@@ -1083,8 +1083,6 @@ POSIX_Init ( void *argument __attribute__((unused)))
     printf("-------------- NETSTAT ------------------\n");
     rtems_bsd_command_netstat(2, (char**) netstat_args);
 
-    /* until now there is no NTP support in libbsd -> Sebastian Huber ... */
-    printf("\n***** Until now no NTP support in RTEMS 5 with rtems-libbsd *****\n");
     printf("\n***** Ask ntp server once... *****\n");
     if (rtemsInit_NTP_server_ip[0]=='\0') {
       printf ("***** No NTP server ...\n");
