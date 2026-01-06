@@ -1154,8 +1154,8 @@ POSIX_Init ( void *argument __attribute__((unused)))
     if (epicsRtemsInitPreSetBootConfigFromNVRAM(&rtems_bsdnet_config) != 0)
         delayedPanic("epicsRtemsInitPreSetBootConfigFromNVRAM");
     if (rtems_bsdnet_config.bootp == NULL) {
-//        extern void setBootConfigFromNVRAM(void);
-        setBootConfigFromNVRAM();
+        extern int setBootConfigFromNVRAM(char *, size_t);
+        setBootConfigFromNVRAM(NULL, 0);
     }
     if (epicsRtemsInitPostSetBootConfigFromNVRAM(&rtems_bsdnet_config) != 0)
         delayedPanic("epicsRtemsInitPostSetBootConfigFromNVRAM");
@@ -1211,58 +1211,40 @@ POSIX_Init ( void *argument __attribute__((unused)))
     printf("\n***** ifconfig lo0 *****\n");
     rtems_bsd_ifconfig_lo0();
 
+/* Check whether global environment static network config exists.
+     * If so, use that, else, fall back to DHCP. */
+    extern int setBootConfigFromNVRAM(char *, size_t);
+    int status = setBootConfigFromNVRAM(rtemsInit_NTP_server_ip,
+                                             sizeof(rtemsInit_NTP_server_ip));
+    bool try_dhcp = status != 0;
 
-    /*
-     * dhcp if no settings vom NVRAM ...
-     */
-    int use_dhcp = 1;
-    char ifnamebuf[IF_NAMESIZE];
-    char *prim_ifname;
-    prim_ifname = if_indextoname(1, &ifnamebuf[0]);
-
-    if (rtems_static_ifconfig.ip_address != NULL && rtems_static_ifconfig.ip_netmask !=NULL) {
-        /* lookup primary network interface */
-        if (prim_ifname) {
-            printf("\n***** set static ifconfig *****\n");
-            if (default_network_ifconfig_hwif0(prim_ifname, rtems_static_ifconfig.ip_address,
-                                               rtems_static_ifconfig.ip_netmask) == 0) {
-                use_dhcp = 0;
-            }
-        }
-     }
-     if(use_dhcp) {
-        printf("\n***** add dhcpcd hook  *****\n");
+    if (try_dhcp) {
+        printf("\n***** add dhcpcd hook *****\n");
         dhcpDone = epicsEventMustCreate(epicsEventEmpty);
         rtems_dhcpcd_add_hook(&dhcpcd_hook);
+
         printf("\n***** Start default network dhcpcd *****\n");
-        default_network_dhcpcd(prim_ifname);
-        // wait for dhcp done ... should be if SYNCDHCP is used
+        default_network_dhcpcd(NULL);
+
         epicsEventWaitStatus stat;
         printf("\n ---- Waiting for DHCP ...\n");
         stat = epicsEventWaitWithTimeout(dhcpDone, 600);
         if (stat == epicsEventOK)
-           epicsEventDestroy(dhcpDone);
+            epicsEventDestroy(dhcpDone);
         else if (stat == epicsEventWaitTimeout)
             printf("\n ---- DHCP timed out!\n");
         else
-           printf("\n ---- dhcpDone Event Unknown state %d\n", stat);
+            printf("\n ---- dhcpDone Event Unknown state %d\n", stat);
     }
 
-
     if(1) {
-        const char* ifconfg_args[] = {
-            "ifconfig", NULL
-        };
-        const char* netstat_args[] = {
-            "netstat", "-rn", NULL
-        };
-
+        const char* ifconfg_args[] = { "ifconfig", NULL };
+        const char* netstat_args[] = { "netstat", "-rn", NULL };
         printf("-------------- IFCONFIG -----------------\n");
         rtems_bsd_command_ifconfig(1, (char**) ifconfg_args);
         printf("-------------- NETSTAT ------------------\n");
         rtems_bsd_command_netstat(2, (char**) netstat_args);
     }
-
     char *cp;
     if ((cp = getenv("EPICS_TS_NTP_INET")) != NULL) {
         printf("\n\n------ EPICS_TS_NTP_INET already set : %s -------\n", cp);
