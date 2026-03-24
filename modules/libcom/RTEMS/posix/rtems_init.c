@@ -34,6 +34,9 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/syslog.h>
+#include <net/route.h>
+#include <net/if_dl.h>
+#include <rtems/bsd/iface.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <assert.h>
@@ -73,6 +76,8 @@
 #include <rtems/bsd/modules.h>
 #include <rtems/dhcpcd.h>
 #include <machine/rtems-bsd-commands.h>
+#include <bsp.h>
+#include <bsp/nexus-devices.h>
 #endif
 
 #include <rtems/telnetd.h>
@@ -975,6 +980,50 @@ default_network_dhcpcd(char *ifname)
                      NULL);
 #endif
 }
+
+/*
+ * Block until the named interface reports link up via an RTM_IFINFO routing
+ * message, or until timeout_secs elapses.
+ *
+ * route_sock must already be open (opened before the interface was configured
+ * so that no RTM_IFINFO event can be missed).
+ *
+ * This function was modeled after the RTM_IFINFO handling in
+ * rtems-libbsd/dhcpcd/if-bsd.c (manage_link).  There's a
+ * simpler implementation in a test that uses a sleep loop in
+ * rtems-libbsd/testsuite/include/rtems/bsd/test/default-init.h, but
+ * we chose this more responsive event based implementation.
+ * 
+ * Returns 0 if link came up, -1 on timeout or error.
+ */
+static int
+wait_for_link_up(int route_sock, const char *ifname, int timeout_secs)
+{
+    printf("Waiting for link on %s (timeout %ds)...\n", ifname, timeout_secs);
+    
+    struct timeval tv = { .tv_sec = timeout_secs, .tv_usec = 0 };
+    setsockopt(route_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    char buf[sizeof(struct if_msghdr) + sizeof(struct sockaddr_dl)];
+    ssize_t n;
+    while ((n = recv(route_sock, buf, sizeof(buf), 0)) > 0) {
+        struct rt_msghdr *rtm = (struct rt_msghdr *)(void *)buf;
+        if (rtm->rtm_type == RTM_IFINFO) {
+            struct if_msghdr *ifm = (struct if_msghdr *)(void *)buf;
+            char name[IFNAMSIZ];
+            if (if_indextoname(ifm->ifm_index, name) != NULL &&
+                strcmp(name, ifname) == 0 &&
+                ifm->ifm_data.ifi_link_state == LINK_STATE_UP) {
+                return 0;
+            }
+        }
+    }
+    
+    /* recv returned <= 0: SO_RCVTIMEO expired (EAGAIN) or socket error */
+    printf("Warning: link did not come up on %s within %ds\n",
+           ifname, timeout_secs);
+    return -1;
+}
 #endif // not RTEMS_LEGACY_STACK
 
 #if __RTEMS_MAJOR__>4
@@ -1081,16 +1130,6 @@ POSIX_Init ( void *argument __attribute__((unused)))
     // rtems_task_priority oldPrio;
     initConsole ();
 
-   /* output to stderr not ssen on console ....? 
-   int fd = open ("/dev/console", O_WRONLY);
-   if (fd < 0 ) {
-     printf(" Houps, could not open /dev/console for writing ...");
-   } else {
-     fd = dup2(fd, 2);
-     printf(" dup2 out %d\n", fd);
-   }
-*/
-
     /*
      * Explain why we're here
      */
@@ -1117,6 +1156,8 @@ POSIX_Init ( void *argument __attribute__((unused)))
     sc = pthread_setschedparam(pthread_self(), policy, &param);
     assert(sc == RTEMS_SUCCESSFUL);
 
+    printf("epics-base build date %s, %s\n", __DATE__, __TIME__);
+    
     /*
      * Use BSP-supplied time of day if available otherwise supply default time.
      * It is very likely that other time synchronization facilities in EPICS
@@ -1208,14 +1249,47 @@ POSIX_Init ( void *argument __attribute__((unused)))
     sc = rtems_task_wake_after(1 * rtems_clock_get_ticks_per_second());
     assert(sc == RTEMS_SUCCESSFUL);
 
+/* Open route socket before configuring the interface so that no
+     * events are missed. */
+    int route_sock = socket(PF_ROUTE, SOCK_RAW, 0);
+    if (route_sock < 0)
+        printf("Warning: could not open PF_ROUTE socket: %s\n", strerror(errno));
+
     printf("\n***** ifconfig lo0 *****\n");
     rtems_bsd_ifconfig_lo0();
 
 /* Check whether global environment static network config exists.
      * If so, use that, else, fall back to DHCP. */
     extern int setBootConfigFromNVRAM(char *, size_t);
+
+    /* Open route socket before configuring the interface so that no
+     * events are missed. */
+    int route_sock = socket(PF_ROUTE, SOCK_RAW, 0);
+    if (route_sock < 0)
+        printf("Warning: could not open PF_ROUTE socket: %s\n", strerror(errno));
+
+    printf("\n***** checking for static network configuration *****\n");
     int status = setBootConfigFromNVRAM(rtemsInit_NTP_server_ip,
                                              sizeof(rtemsInit_NTP_server_ip));
+    bool try_dhcp = status != 0;
+
+    if (try_dhcp) {
+        /* Route socket not needed — DHCP path has its own event mechanism */
+        if (route_sock >= 0) {
+            close(route_sock);
+            route_sock = -1;
+        }
+
+        printf("\n***** add dhcpcd hook *****\n");
+        dhcpDone = epicsEventMustCreate(epicsEventEmpty);
+        rtems_dhcpcd_add_hook(&dhcpcd_hook);
+
+        printf("\n***** Start default network dhcpcd *****\n");
+/* Check whether global environment static network config exists.
+     * If so, use that, else, fall back to DHCP. */
+    extern int setBootConfigFromNVRAM(char *, size_t);
+    int status = setBootConfigFromNVRAM(rtemsInit_NTP_server_ip,
+                                        sizeof(rtemsInit_NTP_server_ip));
     bool try_dhcp = status != 0;
 
     if (try_dhcp) {
@@ -1235,9 +1309,19 @@ POSIX_Init ( void *argument __attribute__((unused)))
             printf("\n ---- DHCP timed out!\n");
         else
             printf("\n ---- dhcpDone Event Unknown state %d\n", stat);
+    } else {
+        /* Static IP: block until the physical link comes up before
+         * proceeding to NTP and NFS, analogous to the DHCP event wait. */
+        if (route_sock >= 0) {
+            char ifnamebuf[IF_NAMESIZE];
+            char *ifname = if_indextoname(1, ifnamebuf);
+            if (ifname != NULL)
+                wait_for_link_up(route_sock, ifname, 30);
+            close(route_sock);
+        }
     }
 
-    if(1) {
+    { /* Dump ifconfig and netstat info to stdout */
         const char* ifconfg_args[] = { "ifconfig", NULL };
         const char* netstat_args[] = { "netstat", "-rn", NULL };
         printf("-------------- IFCONFIG -----------------\n");
@@ -1245,27 +1329,6 @@ POSIX_Init ( void *argument __attribute__((unused)))
         printf("-------------- NETSTAT ------------------\n");
         rtems_bsd_command_netstat(2, (char**) netstat_args);
     }
-    char *cp;
-    if ((cp = getenv("EPICS_TS_NTP_INET")) != NULL) {
-        printf("\n\n------ EPICS_TS_NTP_INET already set : %s -------\n", cp);
-     } else {
-        cp = epicsStrDup("141.14.138.238");
-        printf("\n\n------ hard coded ntp server address : %s -------\n", cp);
-        epicsEnvSet ("EPICS_TS_NTP_INET", cp);
-    }
-//    rtems_bsdnet_config.ntp_server[0] = cp;
-
-    int rtems_bsdnet_ntpserver_count = 1;
-    struct in_addr rtems_bsdnet_ntpserver[rtems_bsdnet_ntpserver_count];
-//    memcpy(rtems_bsdnet_ntpserver, rtems_bsdnet_config.ntp_server, sizeof(struct in_addr));
-memcpy(rtems_bsdnet_ntpserver, cp, sizeof(struct in_addr));
-
-/*
-rtems_task_priority dumm; 
-    sc = rtems_task_set_priority (RTEMS_SELF, oldPrio, &dumm);
-    assert(sc == RTEMS_SUCCESSFUL);
-    printf("Priority changed at end of network init from %d -> %d\n", oldPrio, dumm);
-*/
     printf("\n***** Ask ntp server once... *****\n");
     if (rtemsInit_NTP_server_ip[0]=='\0') {
       printf ("***** No NTP server ...\n");
@@ -1340,6 +1403,15 @@ printf("\n***** Initializing network (Legacy Stack) with prio %d  *****\n", rtem
    printf (" telnetd initialized with result %d\n", result);
 #endif
 
+#if 1
+// Start an rtems shell before main, for debugging RTEMS system issues
+    rtems_shell_init("SHLL", RTEMS_MINIMUM_STACK_SIZE * 4,
+                     100, "/dev/console",
+                     false, true,
+                     NULL);
+#endif
+
+    
     printf ("***** Preparing EPICS application *****\n");
     iocshRegisterRTEMS ();
     set_directory (argv[1]);
