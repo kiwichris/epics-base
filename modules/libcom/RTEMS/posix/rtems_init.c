@@ -992,14 +992,14 @@ default_network_dhcpcd(char *ifname)
  * simpler implementation in a test that uses a sleep loop in
  * rtems-libbsd/testsuite/include/rtems/bsd/test/default-init.h, but
  * we chose this more responsive event based implementation.
- * 
+ *
  * Returns 0 if link came up, -1 on timeout or error.
  */
 static int
 wait_for_link_up(int route_sock, const char *ifname, int timeout_secs)
 {
     printf("Waiting for link on %s (timeout %ds)...\n", ifname, timeout_secs);
-    
+
     struct timeval tv = { .tv_sec = timeout_secs, .tv_usec = 0 };
     setsockopt(route_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
@@ -1017,7 +1017,7 @@ wait_for_link_up(int route_sock, const char *ifname, int timeout_secs)
             }
         }
     }
-    
+
     /* recv returned <= 0: SO_RCVTIMEO expired (EAGAIN) or socket error */
     printf("Warning: link did not come up on %s within %ds\n",
            ifname, timeout_secs);
@@ -1128,7 +1128,7 @@ POSIX_Init ( void *argument __attribute__((unused)))
 
     // rtems_task_priority oldPrio;
     initConsole ();
-/*
+    /*
      * Explain why we're here
      */
     logReset();
@@ -1407,7 +1407,6 @@ printf("\n***** Initializing network (Legacy Stack) with prio %d  *****\n", rtem
                      NULL);
 #endif
 
-    
     printf ("***** Preparing EPICS application *****\n");
     iocshRegisterRTEMS ();
     set_directory (argv[1]);
