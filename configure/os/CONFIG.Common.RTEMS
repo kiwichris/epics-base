@@ -144,6 +144,12 @@ MODEXT=.obj
 OS_CLASS = RTEMS
 
 #--------------------------------------------------
+# Default RTEMS init to the legacy init
+ifndef RTEMS_INIT
+RTEMS_INIT = legacy
+endif
+
+#--------------------------------------------------
 # Operating system compile & link flags
 OP_SYS_CFLAGS += -D__LINUX_ERRNO_EXTENSIONS__
 
