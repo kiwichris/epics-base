@@ -29,11 +29,12 @@ extern void *POSIX_Init(void *argument);
 /*
  * Override in configure/CONFIG_SITE.local with:
  *
- * OP_SYS_CFLAGS += -DCONFIGURE_MICROSECONDS_PER_TICK=1000
+ * OP_SYS_CFLAGS += -DCONFIGURE_MICROSECONDS_PER_TICK=100
  */
 #ifndef CONFIGURE_MICROSECONDS_PER_TICK
 #define CONFIGURE_MICROSECONDS_PER_TICK 10000
 #endif
+
 #define CONFIGURE_MALLOC_STATISTICS     1
 /* MINIMUM_STACK_SIZE == 8K */
 #define CONFIGURE_EXTRA_TASK_STACKS         (4000 * RTEMS_MINIMUM_STACK_SIZE)
@@ -161,7 +162,7 @@ extern void *POSIX_Init(void *argument);
 #define RTEMS_BSD_CONFIG_SERVICE_TELNETD
 #define RTEMS_BSD_CONFIG_TELNETD_STACK_SIZE (16 * 1024)
 #define RTEMS_BSD_CONFIG_SERVICE_FTPD
-#define RTEMS_BSD_CONFIG_FIREWALL_PF
+//#define RTEMS_BSD_CONFIG_FIREWALL_PF
 #else // __RTEMS_MAJOR__ > 4
 #include <rtems/shellconfig.h>
 #endif // __RTEMS_MAJOR__ > 4
@@ -185,7 +186,8 @@ extern void *POSIX_Init(void *argument);
 
 #if defined(BSP_pc386) || defined(BSP_pc686)
 #define RTEMS_BSD_CONFIG_DOMAIN_PAGE_MBUFS_SIZE (64 * 1024 * 1024)
-#elif defined(BSP_qoriq_e500)
+//#elif defined(BSP_qoriq_e500)
+#else
 #define RTEMS_BSD_CONFIG_DOMAIN_PAGE_MBUFS_SIZE (32 * 1024 * 1024)
 #endif
 
