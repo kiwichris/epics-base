@@ -1281,19 +1281,6 @@ POSIX_Init ( void *argument __attribute__((unused)))
         rtems_dhcpcd_add_hook(&dhcpcd_hook);
 
         printf("\n***** Start default network dhcpcd *****\n");
-/* Check whether global environment static network config exists.
-     * If so, use that, else, fall back to DHCP. */
-    extern int setBootConfigFromNVRAM(char *, size_t);
-    int status = setBootConfigFromNVRAM(rtemsInit_NTP_server_ip,
-                                        sizeof(rtemsInit_NTP_server_ip));
-    bool try_dhcp = status != 0;
-
-    if (try_dhcp) {
-        printf("\n***** add dhcpcd hook *****\n");
-        dhcpDone = epicsEventMustCreate(epicsEventEmpty);
-        rtems_dhcpcd_add_hook(&dhcpcd_hook);
-
-        printf("\n***** Start default network dhcpcd *****\n");
         default_network_dhcpcd(NULL);
 
         epicsEventWaitStatus stat;
