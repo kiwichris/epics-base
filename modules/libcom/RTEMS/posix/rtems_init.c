@@ -50,6 +50,7 @@
 #include <sched.h>
 #include <rtems/libio.h>
 #include <rtems/rtc.h>
+#include <rtems/ntpd.h>
 #include <time.h>
 #include <sys/unistd.h>
 #include <pthread.h>
@@ -109,7 +110,7 @@ extern char *env_nfsServer;
 extern char *env_nfsPath;
 extern char *env_nfsMountPoint;
 
-extern void setBootConfigFromNVRAM(void);
+extern int setBootConfigFromNVRAM(char *, size_t);
 
 #ifdef RTEMS_LIBDEBUGGER
 extern rtems_shell_cmd_t rtems_shell_DEBUGGER_Command;
@@ -124,7 +125,8 @@ struct rtems_static_ifconfig {
    char *ip_address;
    char *ip_netmask;
 };
-/* friggle hpj 10.10.24 */
+/*friggle hpj 10.10.24 / 24.6.26 */
+//struct rtems_static_ifconfig rtems_static_ifconfig = {"141.14.128.12","255.255.240.0"};
 struct rtems_static_ifconfig rtems_static_ifconfig = {NULL,NULL};
 
 char rtemsInit_NTP_server_ip[16] = "141.14.138.238";
@@ -145,7 +147,7 @@ void tzset(void);
 int fileno(FILE *);
 int main(int argc, char **argv);
 
-static void
+static void __attribute__((unused))
 logReset (void)
 {
     void rtems_bsp_reset_cause(char *buf, size_t capacity) __attribute__((weak));
@@ -752,45 +754,11 @@ initConsole (void)
         return;
     }
 
-    printf("oflag = 0x%x\n", t.c_oflag);
-    printf("iflag = 0x%x\n", t.c_iflag);
-    printf("lflag = 0x%x\n", t.c_lflag);
-    printf(" VMIN = %d, VTIME = %d\n", t.c_cc[VMIN], t.c_cc[VTIME]);
-
-/*
-
-        term.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR |
-            ICRNL | IXON);
-        term.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL | ECHOPRT | ECHOCTL |
-            ECHOKE | ICANON | ISIG | IEXTEN);
-        term.c_cflag &= ~(CSIZE | PARENB);
-        term.c_cflag |= CS8;
-        term.c_oflag &= ~(OPOST | ONLRET | ONLCR | OCRNL | ONLRET | TABDLY |
-            OLCUC);
-
-        term.c_cc[VMIN] = 0;
-        term.c_cc[VTIME] = 10;
-
-        if (icanon) {
-                term.c_iflag |= ICRNL;
-                term.c_lflag |= ICANON;
-        }
-
-    if (tcsetattr (fileno (stdin), TCSANOW, &term) < 0) {
-        printf ("tcsetattr failed: %s\n", strerror (errno));
-        return;
-    }
-    */
-
     t.c_iflag &= ~(IXOFF | IXON | IXANY);
     if (tcsetattr (fileno (stdin), TCSANOW, &t) < 0) {
         printf ("tcsetattr failed: %s\n", strerror (errno));
         return;
     }
-
-   rtems_printer printer;
-   rtems_print_printer_fprintf(&printer, stdout);
-
 }
 
 /*
@@ -804,7 +772,7 @@ exitHandler(void)
 
 #ifndef RTEMS_LEGACY_STACK
 
-static int
+static int __attribute__((unused))
 default_network_ifconfig_hwif0(char *ifname, char* ipaddress, char *netmask)
 {
         char *ifcfg[] = {
@@ -910,10 +878,9 @@ default_network_on_exit(int exit_code, void *arg)
 }
 
 static void
-default_network_dhcpcd(char *ifname)
+default_network_dhcpcd(void)
 {
-	
-    static const char default_cfg[] = "clientid rtems-client\n";
+    static const char default_cfg[] = "clientid EPICS boot\n";
     rtems_status_code sc;
     int fd;
     int rv;
@@ -949,35 +916,17 @@ default_network_dhcpcd(char *ifname)
 "option domain_name_servers\n"
 "option user_class\n"
 "option posix_timezone\n"
-"timeout 0\n";
+"timeout 30\n";
 
     n = write( fd, fhi_cfg, sizeof(fhi_cfg) - 1 );
     assert( n == (ssize_t) sizeof(fhi_cfg) - 1 );
 
     rv = close( fd );
-    printf(" code(fd)  rv = %d\n", rv);
-    //assert( rv == 0 );
-
-#if 1
-//   debugger_config();
-// Start an rtems shell before main, for debugging RTEMS system issues
-    rtems_shell_init("SHLL", RTEMS_MINIMUM_STACK_SIZE * 4,
-                     100, "/dev/console",
-                     false, true,
-                     NULL);
-#endif
+    assert( rv == 0 );
 
     sc = rtems_dhcpcd_start( NULL );
     assert( sc == RTEMS_SUCCESSFUL );
 
-#if 1
-//   debugger_config();
-// Start an rtems shell before main, for debugging RTEMS system issues
-    rtems_shell_init("SHLL", RTEMS_MINIMUM_STACK_SIZE * 4,
-                     100, "/dev/console",
-                     false, true,
-                     NULL);
-#endif
 }
 
 /*
@@ -1126,77 +1075,7 @@ POSIX_Init ( void *argument __attribute__((unused)))
     struct timespec     now;
     char timeBuff[100];
 
-    // rtems_task_priority oldPrio;
     initConsole ();
-    /*
-     * Explain why we're here
-     */
-    logReset();
-
-    /*
-     * If RTEMS is used with the POSIX API, the init task
-     * 'POSIX_Init()' is unfortunately given the priority '2'. This
-     * corresponds to the second lowest POSIX prio (RTEMS pthread
-     * prio 253). This task shoud have IOCsh prio.
-     */
-    pthread_attr_t attr;
-    struct sched_param  param;
-    int policy;
-    sc  = pthread_attr_init(&attr);
-    assert(sc == RTEMS_SUCCESSFUL);
-    sc = pthread_attr_getschedpolicy(&attr, &policy);
-    assert(sc == RTEMS_SUCCESSFUL);
-
-    param.sched_priority = (sched_get_priority_max(policy)
-                            - sched_get_priority_min(policy))
-                         * epicsThreadPriorityIocsh / 100;
-
-    sc = pthread_setschedparam(pthread_self(), policy, &param);
-    assert(sc == RTEMS_SUCCESSFUL);
-    
-    /*
-     * Use BSP-supplied time of day if available otherwise supply default time.
-     * It is very likely that other time synchronization facilities in EPICS
-     * will soon override this value.
-     */
-    /* check for RTC ... unfortunately seems to be missing with libbsd and qemu ? 
-     */
-
-    if (checkRealTime() >= 0) {
-      printf(" get time from RTC\n");
-      setRealTimeToRTEMS();
-    } else { 
-
-      // set time to 14.4.2024
-      now.tv_sec = 1713079835;
-      now.tv_nsec = 0;
-      sc = clock_settime(CLOCK_REALTIME, &now);
-      if (sc < 0)
-        printf ("***** Can't set time: %s\n", rtems_status_text (sc));
-
-    }
-
-    sc = clock_gettime( CLOCK_REALTIME, &now);
-    if ( sc < 0) {
-      printf ("***** Can't get time: %s\n", rtems_status_text (sc));
-    } else {
-      strftime(timeBuff, sizeof timeBuff, "%D %T", gmtime(&now.tv_sec));
-      printf("time set to : %s.%09ld UTC\n", timeBuff, now.tv_nsec);
-    }
-
-    /* TBD ...
-     * Architecture-specific hooks
-     */
-#ifdef RTEMS_LEGACY_STACK
-    if (epicsRtemsInitPreSetBootConfigFromNVRAM(&rtems_bsdnet_config) != 0)
-        delayedPanic("epicsRtemsInitPreSetBootConfigFromNVRAM");
-    if (rtems_bsdnet_config.bootp == NULL) {
-        extern int setBootConfigFromNVRAM(char *, size_t);
-        setBootConfigFromNVRAM(NULL, 0);
-    }
-    if (epicsRtemsInitPostSetBootConfigFromNVRAM(&rtems_bsdnet_config) != 0)
-        delayedPanic("epicsRtemsInitPostSetBootConfigFromNVRAM");
-#endif
 
     /*
      * Create a reasonable environment
@@ -1211,15 +1090,15 @@ POSIX_Init ( void *argument __attribute__((unused)))
     printf("\n***** RTEMS Version: %s *****\n",
         rtems_get_version_string());
 
-
 #ifndef RTEMS_LEGACY_STACK
-#if defined(QEMU_FIXUPS) && defined(__i386__)
+  #if defined(QEMU_FIXUPS) && defined(__i386__)
     // glorious hack to stub out useless EEPROM check
     // which takes sooooo longggg w/ QEMU
     // Writes a 'ret' instruction to immediately return to the caller
     extern void _bsd_e1000_validate_nvm_checksum(void);
     *(char*)&_bsd_e1000_validate_nvm_checksum = 0xc3;
-#endif
+  #endif
+
     /*
      * Start network (libbsd)
      *
@@ -1229,27 +1108,47 @@ POSIX_Init ( void *argument __attribute__((unused)))
      * -append "--video=off --console=/dev/com1" -kernel libComTestHarness
      */
 
-    printf("\n***** Initializing network (libbsd) *****\n");
     if(0) rtems_bsd_setlogpriority("debug");
     on_exit(default_network_on_exit, NULL);
 
-/* Let other tasks run to complete background work
-    sc = rtems_task_set_priority (RTEMS_SELF, RTEMS_MAXIMUM_PRIORITY/2, &oldPrio);
-    assert(sc == RTEMS_SUCCESSFUL);
-    printf("Priority changed from %d -> %d\n", oldPrio, RTEMS_MAXIMUM_PRIORITY/2);
-*/
+    printf("\n***** Initializing network (libbsd) *****\n");
     sc = rtems_bsd_initialize();
     assert(sc == RTEMS_SUCCESSFUL);
 
     /* Let the callout timer allocate its resources */
-    sc = rtems_task_wake_after(1 * rtems_clock_get_ticks_per_second());
-    assert(sc == RTEMS_SUCCESSFUL);
+    rtems_task_wake_after(RTEMS_MILLISECONDS_TO_TICKS(500));
 
-/* Open route socket before configuring the interface so that no
-     * events are missed. */
-    int route_sock = socket(PF_ROUTE, SOCK_RAW, 0);
-    if (route_sock < 0)
-        printf("Warning: could not open PF_ROUTE socket: %s\n", strerror(errno));
+    /* Write leap seconds - rtems_ntpd_client_pool_config normally does this */
+    rtems_ntpd_add_etc_services();   /* writes /etc/services */
+
+    /* Write leap seconds file directly */
+    /* Use the content from rtems-ntpd-configs.c - expose it or duplicate it */
+    /* Simplest: call client_pool_config first to get leap-seconds written,
+       then immediately overwrite ntp.conf with our server version */
+    rtems_ntpd_client_pool_config(rtemsInit_NTP_server_ip);  /* writes leap-seconds */
+
+    printf("\n***** Prepare ntp.conf (server %s) *****\n", rtemsInit_NTP_server_ip);
+    /* Now overwrite ntp.conf with correct server + iburst */
+    FILE *fp = fopen("/etc/ntp.conf", "w");
+    if (fp != NULL) {
+      fprintf(fp,
+          "server %s iburst\n"
+          "tos minclock 1 maxclock 6\n"
+          "restrict default limited kod nomodify notrap noquery nopeer\n"
+          "restrict source limited kod nomodify notrap noquery\n"
+          "restrict 127.0.0.1\n"
+          "restrict ::1\n"
+          "leapfile \"/etc/leap-seconds\"\n",
+          rtemsInit_NTP_server_ip);
+      fclose(fp);
+      printf("NTP: overwrote /etc/ntp.conf with server %s iburst\n",
+             rtemsInit_NTP_server_ip);
+    }
+
+    /* Tell osdNTP_Configure to use this file, skipping pool config */
+    epicsEnvSet("EPICS_TS_NTP_CONF_FILE", "/etc/ntp.conf");
+
+
 
     printf("\n***** ifconfig lo0 *****\n");
     rtems_bsd_ifconfig_lo0();
@@ -1281,7 +1180,7 @@ POSIX_Init ( void *argument __attribute__((unused)))
         rtems_dhcpcd_add_hook(&dhcpcd_hook);
 
         printf("\n***** Start default network dhcpcd *****\n");
-        default_network_dhcpcd(NULL);
+        default_network_dhcpcd();
 
         epicsEventWaitStatus stat;
         printf("\n ---- Waiting for DHCP ...\n");
@@ -1327,7 +1226,6 @@ POSIX_Init ( void *argument __attribute__((unused)))
     }
 
 #else // Legacy stack, old network initialization
-
     if (rtems_bsdnet_config.network_task_priority == 0)
     {
         unsigned int p;
@@ -1340,14 +1238,56 @@ POSIX_Init ( void *argument __attribute__((unused)))
         printf(" This is network task prio (RTEMS) : %d , OSI Prio %d\n", p, epicsThreadPriorityScanLow);
         rtems_bsdnet_config.network_task_priority = p;
     }
-printf("\n***** Initializing network (Legacy Stack) with prio %d  *****\n", rtems_bsdnet_config.network_task_priority);
+    printf("\n***** Initializing network (Legacy Stack) with prio %d  *****\n", rtems_bsdnet_config.network_task_priority);
     rtems_bsdnet_initialize_network();
     printf("\n***** Network Status  *****\n");
     rtems_netstat(3);
-    rtems_bsdnet_synchronize_ntp (0, 0);
+    //rtems_bsdnet_synchronize_ntp (0, 0);
 #endif // not RTEMS_LEGACY_STACK
 
     fixup_hosts();
+
+    /* - NTP time synchronisation before filesystem and iocInit -*/
+
+    /* Step 1: one-shot SNTP to set OS clock immediately after DHCP */
+
+    //struct timespec now;
+    if (rtemsInit_NTP_server_ip[0] != '\0') {
+        printf("\n***** One-shot NTP time set from %s *****\n",
+               rtemsInit_NTP_server_ip);
+        if (epicsNtpGetTime(rtemsInit_NTP_server_ip, &now) == 0) {
+            if (clock_settime(CLOCK_REALTIME, &now) == 0) {
+                char tbuf[32];
+                strftime(tbuf, sizeof(tbuf), "%Y/%m/%d %H:%M:%S",
+                         gmtime(&now.tv_sec));
+                printf("***** Clock set to %s UTC *****\n", tbuf);
+            } else {
+                printf("WARNING: clock_settime failed: %s\n", strerror(errno));
+            }
+        } else {
+            printf("WARNING: epicsNtpGetTime failed, clock not set\n");
+        }
+    }
+    char *cp;
+    if ((cp = getenv("EPICS_TS_NTP_INET")) != NULL) {
+        printf("\n\n------ EPICS_TS_NTP_INET already set : %s -------\n", cp);
+     } else {
+        cp = epicsStrDup(rtemsInit_NTP_server_ip);
+        printf("\n\n------ ntp server address : %s -------\n", cp);
+        epicsEnvSet ("EPICS_TS_NTP_INET", cp);
+    }
+
+    int rtems_bsdnet_ntpserver_count = 1;
+    struct in_addr rtems_bsdnet_ntpserver[rtems_bsdnet_ntpserver_count];
+    inet_aton(cp, &rtems_bsdnet_ntpserver[0]);
+
+    /* Step 2: initialise EPICS time provider now, with valid OS clock.
+    NTPTime_Init uses epicsThreadOnce so the initHookAtBeginning call
+    inside iocInit becomes a no-op. synchronized=1 from the start. */
+
+    printf(" Initialising EPICS time provider...\n");
+    osdTimeRegister();
+    /* end NTP sync */
 
     printf("\n***** Setting up file system *****\n");
     initialize_remote_filesystem(argv, initialize_local_filesystem(argv));
@@ -1370,10 +1310,7 @@ printf("\n***** Initializing network (Legacy Stack) with prio %d  *****\n", rtem
             printf("Warning -- no timezone information available -- times will be displayed as GMT.\n");
         }
     }
-    printf(" check for time registered , C++ initialization ...\n");
-    osdTimeRegister();
-
-    // zoneset?
+// zoneset?
     tzset();
 
     /*/Volumes/Epics/myExample/bin/RTEMS-xilinx_zynq_a9_qemu
