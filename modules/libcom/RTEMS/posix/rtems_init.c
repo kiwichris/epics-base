@@ -1073,7 +1073,6 @@ POSIX_Init ( void *argument __attribute__((unused)))
     char                *argv[3]         = { NULL, NULL, NULL };
     rtems_status_code   sc;
     struct timespec     now;
-    char timeBuff[100];
 
     initConsole ();
 
@@ -1211,20 +1210,6 @@ POSIX_Init ( void *argument __attribute__((unused)))
         printf("-------------- NETSTAT ------------------\n");
         rtems_bsd_command_netstat(2, (char**) netstat_args);
     }
-    printf("\n***** Ask ntp server once... *****\n");
-    if (rtemsInit_NTP_server_ip[0]=='\0') {
-      printf ("***** No NTP server ...\n");
-    } else if (epicsNtpGetTime(rtemsInit_NTP_server_ip, &now) < 0) {
-      printf ("***** Can't get time from ntp ...\n");
-    } else {
-      if (clock_settime(CLOCK_REALTIME, &now) < 0){
-        printf ("***** Can't set time: %s\n", rtems_status_text (sc));
-      } else {
-        strftime(timeBuff, sizeof timeBuff, "%D %T", gmtime(&now.tv_sec));
-        printf("time from ntp : %s.%09ld UTC\n", timeBuff, now.tv_nsec);
-      }
-    }
-
 #else // Legacy stack, old network initialization
     if (rtems_bsdnet_config.network_task_priority == 0)
     {
